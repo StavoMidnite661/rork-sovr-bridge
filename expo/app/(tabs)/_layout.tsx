@@ -4,6 +4,7 @@ import {
   Building2,
   Flame,
   ScrollText,
+  Send,
   Vault,
 } from "lucide-react-native";
 import React from "react";
@@ -49,6 +50,13 @@ export default function TabLayout() {
               <Flame color={color} size={20} strokeWidth={1.5} />
             </View>
           ),
+        }}
+      />
+      <Tabs.Screen
+        name="send"
+        options={{
+          title: "Send",
+          tabBarIcon: ({ color }) => <Send color={color} size={20} strokeWidth={1.5} />,
         }}
       />
       <Tabs.Screen

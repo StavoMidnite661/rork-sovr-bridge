@@ -1,5 +1,5 @@
 import { router } from "expo-router";
-import { ArrowDownToLine, ArrowUpRight, Flame, ShieldCheck } from "lucide-react-native";
+import { ArrowDownToLine, ArrowUpRight, Flame, Send, ShieldCheck } from "lucide-react-native";
 import React from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { ScreenShell } from "@/components/screen-shell";
@@ -57,8 +57,13 @@ export default function VaultScreen() {
         <View style={styles.actions}>
           <ActionTile
             icon={<Flame size={18} color={Colors.brass} strokeWidth={1.5} />}
-            label="Burn → Credit"
+            label="Burn"
             onPress={() => router.push("/(tabs)/burn")}
+          />
+          <ActionTile
+            icon={<Send size={18} color={Colors.brass} strokeWidth={1.5} />}
+            label="Send"
+            onPress={() => router.push("/(tabs)/send")}
           />
           <ActionTile
             icon={<ArrowDownToLine size={18} color={Colors.brass} strokeWidth={1.5} />}
@@ -132,6 +137,8 @@ export default function VaultScreen() {
                     <Text style={[type.bodyStrong, { color: Colors.textHigh }]}>
                       {e.kind === "burn_credit"
                         ? `Burn · ${e.tokenSymbol}`
+                        : e.kind === "transfer_debit"
+                        ? `Send · ${e.counterpartyName}`
                         : `Withdraw · ${e.rail?.toUpperCase().replace("_", " ")}`}
                     </Text>
                     <Text style={[type.mono, { color: Colors.textLow, marginTop: 2 }]}>

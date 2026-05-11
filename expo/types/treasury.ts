@@ -1,8 +1,13 @@
 export type Chain = "ethereum" | "base" | "arbitrum" | "optimism" | "polygon";
 
-export type RailType = "ach_standard" | "ach_same_day" | "rtp" | "debit_push";
+export type RailType = "ach_standard" | "ach_same_day" | "rtp" | "debit_push" | "internal_p2p";
 
-export type LedgerEntryKind = "burn_credit" | "withdraw_debit" | "fee_debit";
+export type LedgerEntryKind =
+  | "burn_credit"
+  | "withdraw_debit"
+  | "fee_debit"
+  | "transfer_debit"
+  | "transfer_credit";
 
 export type LedgerStatus =
   | "pending"
@@ -10,15 +15,15 @@ export type LedgerStatus =
   | "verified"
   | "failed"
   | "posted"
-  | "voided";
+  | "voided"
+  | "syncing";
 
 /**
  * TigerBeetle-inspired Account structure for deterministic logic.
- * Tracks balances in fractional cents (integers) to avoid floating point errors.
  */
 export interface TigerBeetleAccount {
   id: string;
-  debits_pending: number; // Simplified to number for easier JSON serialization, but used as integer
+  debits_pending: number;
   debits_posted: number;
   credits_pending: number;
   credits_posted: number;
@@ -29,6 +34,13 @@ export interface TigerBeetleAccount {
     credits_must_not_exceed_debits?: boolean;
     is_private?: boolean;
   };
+}
+
+export interface Principal {
+  id: string;
+  name: string;
+  kycLevel: number;
+  status: "active" | "frozen" | "restricted";
 }
 
 export interface BankAccount {
@@ -69,6 +81,11 @@ export interface LedgerEntry {
   // TigerBeetle specific
   transferId?: string;
   pendingTransferId?: string; // For post/void operations
+
+  // P2P / Transfer specific
+  counterpartyId?: string;
+  counterpartyName?: string;
+  memo?: string;
 
   // burn-specific
   tokenSymbol?: string;

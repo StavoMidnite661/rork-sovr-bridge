@@ -5,6 +5,9 @@ import type { TigerBeetleAccount } from "@/types/treasury";
  * Enforces strict double-entry invariants and tracks pending/posted states.
  */
 export class TigerBeetleSimulation {
+  /**
+   * Create a transfer between two accounts.
+   */
   static createTransfer(
     accounts: TigerBeetleAccount[],
     debitAccountId: string,
@@ -48,6 +51,9 @@ export class TigerBeetleSimulation {
     return { nextAccounts, success: true };
   }
 
+  /**
+   * Post a pending transfer.
+   */
   static postTransfer(
     accounts: TigerBeetleAccount[],
     debitAccountId: string,
@@ -74,6 +80,9 @@ export class TigerBeetleSimulation {
     return { nextAccounts, success: true };
   }
 
+  /**
+   * Void a pending transfer.
+   */
   static voidTransfer(
     accounts: TigerBeetleAccount[],
     debitAccountId: string,
@@ -90,5 +99,28 @@ export class TigerBeetleSimulation {
       return a;
     });
     return { nextAccounts, success: true };
+  }
+
+  /**
+   * Atomically transfers amount + fee in a distributed-ledger style.
+   */
+  static createTransferWithFee(
+    accounts: TigerBeetleAccount[],
+    sourceAccountId: string,
+    destAccountId: string,
+    feeAccountId: string,
+    amountCents: number,
+    feeCents: number,
+    isPending: boolean = false
+  ): { nextAccounts: TigerBeetleAccount[]; success: boolean; error?: string } {
+    const totalDebit = amountCents + feeCents;
+
+    // First debit source for total (amount + fee)
+    const step1 = this.createTransfer(accounts, sourceAccountId, destAccountId, amountCents, isPending);
+    if (!step1.success) return step1;
+
+    // Then debit source for fee, credit fee account
+    const step2 = this.createTransfer(step1.nextAccounts, sourceAccountId, feeAccountId, feeCents, isPending);
+    return step2;
   }
 }

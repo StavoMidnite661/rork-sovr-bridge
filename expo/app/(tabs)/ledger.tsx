@@ -36,7 +36,7 @@ export default function LedgerScreen() {
       {/* Filter */}
       <View style={styles.filterRow}>
         <Filter size={12} color={Colors.brass} strokeWidth={1.5} />
-        {(["all", "burn_credit", "withdraw_debit"] as FilterKind[]).map((f) => (
+        {(["all", "burn_credit", "withdraw_debit", "transfer_debit"] as FilterKind[]).map((f) => (
           <Pressable
             key={f}
             onPress={() => setFilter(f)}
@@ -52,7 +52,7 @@ export default function LedgerScreen() {
                 filter === f && { color: Colors.brass },
               ]}
             >
-              {f === "all" ? "All" : f === "burn_credit" ? "Burns" : "Withdrawals"}
+              {f === "all" ? "All" : f === "burn_credit" ? "Burns" : f === "withdraw_debit" ? "Withdrawals" : "Transfers"}
             </Text>
           </Pressable>
         ))}
@@ -80,12 +80,15 @@ export default function LedgerScreen() {
 
 function Row({ entry }: { entry: LedgerEntry }) {
   const isBurn = entry.kind === "burn_credit";
-  const Arrow = isBurn ? ArrowDownLeft : ArrowUpRight;
+  const isTransfer = entry.kind === "transfer_debit" || entry.kind === "transfer_credit";
+  const isDebit = entry.amountUsd < 0;
+  const Arrow = (isBurn || entry.kind === "transfer_credit") ? ArrowDownLeft : ArrowUpRight;
 
   // Map internal TB status to UI display
   const displayStatus = (status: LedgerStatus) => {
     switch(status) {
       case "posted": return "verified";
+      case "syncing": return "pending";
       case "voided": return "failed";
       default: return status;
     }
@@ -96,6 +99,7 @@ function Row({ entry }: { entry: LedgerEntry }) {
       case "posted": return "Settled";
       case "pending": return "Settling";
       case "confirming": return "Verifying";
+      case "syncing": return "Syncing";
       case "voided": return "Voided";
       default: return status.charAt(0).toUpperCase() + status.slice(1);
     }
@@ -114,7 +118,7 @@ function Row({ entry }: { entry: LedgerEntry }) {
         <View style={styles.rowIcon}>
           <Arrow
             size={14}
-            color={isBurn ? Colors.verified : Colors.brass}
+            color={!isDebit ? Colors.verified : Colors.brass}
             strokeWidth={1.8}
           />
         </View>
@@ -123,6 +127,8 @@ function Row({ entry }: { entry: LedgerEntry }) {
             <Text style={[type.bodyStrong, { color: Colors.textHigh }]}>
               {isBurn
                 ? `Burn · ${entry.tokenSymbol}`
+                : isTransfer
+                ? `${isDebit ? "Send" : "Receive"} · ${entry.counterpartyName}`
                 : `Withdraw · ${entry.rail?.toUpperCase().replace("_", " ")}`}
             </Text>
             <StatusDot status={displayStatus(entry.status) as any} />
@@ -154,7 +160,7 @@ function Row({ entry }: { entry: LedgerEntry }) {
         >
           {formatUSD(entry.amountUsd, { sign: true })}
         </Text>
-        {entry.status === "pending" || entry.status === "confirming" ? (
+        {entry.status === "pending" || entry.status === "confirming" || entry.status === "syncing" ? (
           <Text style={[type.caption, { color: Colors.textLow, fontSize: 10, marginTop: 4 }]}>
             PROVISIONAL
           </Text>
