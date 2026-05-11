@@ -2,18 +2,21 @@ import createContextHook from "@nkzw/create-context-hook";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useQuery } from "@tanstack/react-query";
 import { useCallback, useMemo, useState } from "react";
+import { TigerBeetleSimulation } from "@/lib/ledger";
 import type {
   BankAccount,
   BurnableToken,
   KycState,
   LedgerEntry,
+  Principal,
   RailType,
   SecurityPosture,
+  TigerBeetleAccount,
   TreasuryStats,
   Wallet,
 } from "@/types/treasury";
 
-const STORAGE_KEY = "sovr.bridge.state.v1";
+const STORAGE_KEY = "sovr.bridge.state.v2";
 
 interface PersistedState {
   banks: BankAccount[];
@@ -21,35 +24,59 @@ interface PersistedState {
   ledger: LedgerEntry[];
   kyc: KycState;
   security: SecurityPosture;
+  tbAccounts: TigerBeetleAccount[];
 }
 
-const seedBanks: BankAccount[] = [
+const seedTBAccounts: TigerBeetleAccount[] = [
   {
-    id: "ba_chase_8821",
-    institution: "Chase",
-    mask: "8821",
-    type: "checking",
-    verified: true,
-    addedAt: Date.now() - 1000 * 60 * 60 * 24 * 14,
+    id: "treasury.burn_pool",
+    ledger: 1,
+    code: 100,
+    debits_pending: 0,
+    debits_posted: 0,
+    credits_pending: 0,
+    credits_posted: 100000000,
+    flags: { credits_must_not_exceed_debits: false },
   },
   {
-    id: "ba_amex_4402",
-    institution: "American Express",
-    mask: "4402",
-    type: "debit_card",
-    verified: true,
-    addedAt: Date.now() - 1000 * 60 * 60 * 24 * 3,
+    id: "user.balance",
+    ledger: 1,
+    code: 200,
+    debits_pending: 0,
+    debits_posted: 0,
+    credits_pending: 0,
+    credits_posted: 215000,
+    flags: { debits_must_not_exceed_credits: true },
+  },
+  {
+    id: "fees.collector",
+    ledger: 1,
+    code: 999,
+    debits_pending: 0,
+    debits_posted: 0,
+    credits_pending: 0,
+    credits_posted: 0,
+    flags: {},
+  },
+  {
+    id: "private.vault.privileged",
+    ledger: 2,
+    code: 777,
+    debits_pending: 0,
+    debits_posted: 0,
+    credits_pending: 0,
+    credits_posted: 50000000,
+    flags: { is_private: true, debits_must_not_exceed_credits: true },
   },
 ];
 
+const seedBanks: BankAccount[] = [
+  { id: "ba_chase_8821", institution: "Chase", mask: "8821", type: "checking", verified: true, addedAt: Date.now() - 1000*60*60*24*14 },
+  { id: "ba_private_9999", institution: "Swiss Private Bank", mask: "9999", type: "savings", verified: true, addedAt: Date.now() - 1000*60*60*24*1, isPrivate: true },
+];
+
 const seedWallets: Wallet[] = [
-  {
-    id: "w_mm_1",
-    provider: "metamask",
-    address: "0x7A3f9C2e1B8d4F5a6C3E9B0a2F8D7C6E5B4A3F21",
-    chain: "base",
-    connectedAt: Date.now() - 1000 * 60 * 60 * 24 * 7,
-  },
+  { id: "w_mm_1", provider: "metamask", address: "0x7A3f9C2e1B8d4F5a6C3E9B0a2F8D7C6E5B4A3F21", chain: "base", connectedAt: Date.now() - 1000*60*60*24*7 },
 ];
 
 const seedLedger: LedgerEntry[] = [
@@ -63,80 +90,29 @@ const seedLedger: LedgerEntry[] = [
     tokenAmount: 2500,
     chain: "base",
     txHash: "0x4a3f9c2e1b8d4f5a6c3e9b0a2f8d7c6e5b4a3f21d8c7b6a5949382716054321a",
-    blockNumber: 18234092,
-    confirmations: 64,
-    requiredConfirmations: 32,
     debitAccount: "treasury.burn_pool",
     creditAccount: "user.balance",
     seal: "S-2A4F-0001",
   },
-  {
-    id: "lx_0002",
-    kind: "withdraw_debit",
-    status: "verified",
-    amountUsd: -1200,
-    createdAt: Date.now() - 1000 * 60 * 60 * 24 * 3,
-    bankAccountId: "ba_chase_8821",
-    rail: "ach_same_day",
-    eta: "Settled",
-    debitAccount: "user.balance",
-    creditAccount: "external.bank.chase_8821",
-    seal: "S-2A4F-0002",
-  },
-  {
-    id: "lx_0003",
-    kind: "burn_credit",
-    status: "verified",
-    amountUsd: 850,
-    createdAt: Date.now() - 1000 * 60 * 60 * 24 * 1,
-    tokenSymbol: "SOVR",
-    tokenAmount: 850,
-    chain: "base",
-    txHash: "0x91bca7e2f3d4c5b6a7980e1f2d3c4b5a69788776655443322110ffeeddccbbaa",
-    blockNumber: 18298311,
-    confirmations: 48,
-    requiredConfirmations: 32,
-    debitAccount: "treasury.burn_pool",
-    creditAccount: "user.balance",
-    seal: "S-2A4F-0003",
-  },
+];
+
+const knownPrincipals: Principal[] = [
+  { id: "0x99AA", name: "Satoshi G.", kycLevel: 2, status: "active" },
+  { id: "0xBB21", name: "Alice Treasury", kycLevel: 1, status: "active" },
+  { id: "0xCC55", name: "Bob Liquidity", kycLevel: 3, status: "active" },
 ];
 
 const defaultState: PersistedState = {
   banks: seedBanks,
   wallets: seedWallets,
   ledger: seedLedger,
-  kyc: {
-    status: "verified",
-    provider: "persona",
-    level: 2,
-    lastReviewed: Date.now() - 1000 * 60 * 60 * 24 * 30,
-  },
-  security: {
-    passkeyEnrolled: true,
-    biometricsEnabled: true,
-    twoFactorEnabled: true,
-    lastAudit: Date.now() - 1000 * 60 * 60 * 6,
-  },
+  kyc: { status: "verified", provider: "persona", level: 2, lastReviewed: Date.now() - 1000*60*60*24*30 },
+  security: { passkeyEnrolled: true, biometricsEnabled: true, twoFactorEnabled: true, lastAudit: Date.now() - 1000*60*60*6 },
+  tbAccounts: seedTBAccounts,
 };
 
 const burnableTokens: BurnableToken[] = [
-  {
-    symbol: "SOVR",
-    name: "Sovereign Treasury Token",
-    contract: "0x5A9F3C2e8B1D4f7A6C3E9B0a2F8D7C6E5B4A3F21",
-    chain: "base",
-    rate: 1.0,
-    balance: 12480.5,
-  },
-  {
-    symbol: "TBND",
-    name: "TreasuryBond Stable",
-    contract: "0x3C8B7D2e1A9f4F5a6C3E9B0a2F8D7C6E5B4A3FAA",
-    chain: "arbitrum",
-    rate: 1.0,
-    balance: 4200,
-  },
+  { symbol: "SOVR", name: "Sovereign Treasury Token", contract: "0x5A9F3C2e8B1D4f7A6C3E9B0a2F8D7C6E5B4A3F21", chain: "base", rate: 1.0, balance: 12480.5 },
 ];
 
 function makeSeal(prefix: string): string {
@@ -165,9 +141,7 @@ export const [TreasuryProvider, useTreasury] = createContextHook(() => {
           const parsed = JSON.parse(raw) as PersistedState;
           setState(parsed);
         }
-      } catch (e) {
-        console.log("[treasury] hydrate failed", e);
-      }
+      } catch (e) {}
       setHydrated(true);
       return true;
     },
@@ -177,26 +151,30 @@ export const [TreasuryProvider, useTreasury] = createContextHook(() => {
     setState(next);
     try {
       await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(next));
-    } catch (e) {
-      console.log("[treasury] persist failed", e);
-    }
+    } catch (e) {}
   }, []);
 
   const balance = useMemo<number>(() => {
-    return state.ledger
-      .filter((e) => e.status === "verified")
-      .reduce((sum, e) => sum + e.amountUsd, 0);
-  }, [state.ledger]);
+    const userAcc = state.tbAccounts.find(a => a.id === "user.balance");
+    if (!userAcc) return 0;
+    return (userAcc.credits_posted - userAcc.debits_posted) / 100;
+  }, [state.tbAccounts]);
+
+  const privateBalance = useMemo<number>(() => {
+    const privAcc = state.tbAccounts.find(a => a.id === "private.vault.privileged");
+    if (!privAcc) return 0;
+    return (privAcc.credits_posted - privAcc.debits_posted) / 100;
+  }, [state.tbAccounts]);
 
   const stats = useMemo<TreasuryStats>(() => {
     const totalCreditsIssued = state.ledger
-      .filter((e) => e.kind === "burn_credit" && e.status === "verified")
+      .filter((e) => e.kind === "burn_credit" && (e.status === "verified" || e.status === "posted"))
       .reduce((s, e) => s + e.amountUsd, 0);
     const totalWithdrawn = state.ledger
-      .filter((e) => e.kind === "withdraw_debit" && e.status === "verified")
+      .filter((e) => e.kind === "withdraw_debit" && (e.status === "verified" || e.status === "posted"))
       .reduce((s, e) => s + Math.abs(e.amountUsd), 0);
     const burnedTokens = state.ledger
-      .filter((e) => e.kind === "burn_credit" && e.status === "verified")
+      .filter((e) => e.kind === "burn_credit" && (e.status === "verified" || e.status === "posted"))
       .reduce((s, e) => s + (e.tokenAmount ?? 0), 0);
     return {
       totalCreditsIssued,
@@ -207,201 +185,105 @@ export const [TreasuryProvider, useTreasury] = createContextHook(() => {
     };
   }, [state.ledger]);
 
-  const initiateBurn = useCallback(
-    async (token: BurnableToken, amount: number): Promise<LedgerEntry> => {
-      const id = `lx_${Date.now().toString(36)}`;
-      const entry: LedgerEntry = {
-        id,
-        kind: "burn_credit",
-        status: "confirming",
-        amountUsd: amount * token.rate,
-        createdAt: Date.now(),
-        tokenSymbol: token.symbol,
-        tokenAmount: amount,
-        chain: token.chain,
-        txHash: makeTxHash(),
-        blockNumber: 18000000 + Math.floor(Math.random() * 1000000),
-        confirmations: 3,
-        requiredConfirmations: 32,
-        debitAccount: "treasury.burn_pool",
-        creditAccount: "user.balance",
-        seal: makeSeal("S-2A4F"),
-      };
-      const next = { ...state, ledger: [entry, ...state.ledger] };
-      await persist(next);
+  const initiateBurn = useCallback(async (token: BurnableToken, amount: number) => {
+    const amountCents = Math.round(amount * token.rate * 100);
+    const res = TigerBeetleSimulation.createTransfer(state.tbAccounts, "treasury.burn_pool", "user.balance", amountCents, true);
+    if (!res.success) throw new Error(res.error);
 
-      // simulate confirmation progression
-      const tickerId = entry.id;
-      const confirm = async (count: number) => {
-        await new Promise((r) => setTimeout(r, 900));
-        setState((prev) => {
-          const updated = prev.ledger.map((e) =>
-            e.id === tickerId
-              ? {
-                  ...e,
-                  confirmations: count,
-                  status:
-                    count >= (e.requiredConfirmations ?? 32)
-                      ? ("verified" as const)
-                      : ("confirming" as const),
-                }
-              : e
-          );
-          const nextState = { ...prev, ledger: updated };
-          AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(nextState)).catch(
-            () => {}
-          );
-          return nextState;
-        });
-      };
-      (async () => {
-        for (const c of [8, 16, 24, 32]) {
-          await confirm(c);
-        }
-      })();
+    const id = `lx_${Date.now().toString(36)}`;
+    const entry: LedgerEntry = {
+      id, kind: "burn_credit", status: "confirming", amountUsd: amount * token.rate,
+      createdAt: Date.now(), tokenSymbol: token.symbol, tokenAmount: amount, chain: token.chain,
+      txHash: makeTxHash(), debitAccount: "treasury.burn_pool", creditAccount: "user.balance",
+      seal: makeSeal("S-2A4F"),
+    };
 
-      return entry;
-    },
-    [state, persist]
-  );
+    await persist({ ...state, ledger: [entry, ...state.ledger], tbAccounts: res.nextAccounts });
 
-  const initiateWithdraw = useCallback(
-    async (
-      bankAccountId: string,
-      amount: number,
-      rail: RailType
-    ): Promise<LedgerEntry> => {
-      const eta =
-        rail === "rtp"
-          ? "≈ 30 seconds"
-          : rail === "ach_same_day"
-          ? "Today, by 5:00 PM ET"
-          : rail === "debit_push"
-          ? "≈ 2 minutes"
-          : "1–3 business days";
-      const id = `lx_${Date.now().toString(36)}`;
-      const entry: LedgerEntry = {
-        id,
-        kind: "withdraw_debit",
-        status: "pending",
-        amountUsd: -Math.abs(amount),
-        createdAt: Date.now(),
-        bankAccountId,
-        rail,
-        eta,
-        debitAccount: "user.balance",
-        creditAccount: `external.bank.${bankAccountId}`,
-        seal: makeSeal("S-2A4F"),
-      };
-      const next = { ...state, ledger: [entry, ...state.ledger] };
-      await persist(next);
-
-      // simulate settlement
-      setTimeout(() => {
-        setState((prev) => {
-          const updated = prev.ledger.map((e) =>
-            e.id === id ? { ...e, status: "verified" as const } : e
-          );
-          const nextState = { ...prev, ledger: updated };
-          AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(nextState)).catch(
-            () => {}
-          );
-          return nextState;
-        });
-      }, 2400);
-
-      return entry;
-    },
-    [state, persist]
-  );
-
-  const linkBank = useCallback(
-    async (bank: Omit<BankAccount, "id" | "addedAt" | "verified">) => {
-      const next: PersistedState = {
-        ...state,
-        banks: [
-          ...state.banks,
-          {
-            ...bank,
-            id: `ba_${Date.now().toString(36)}`,
-            addedAt: Date.now(),
-            verified: true,
-          },
-        ],
-      };
-      await persist(next);
-    },
-    [state, persist]
-  );
-
-  const removeBank = useCallback(
-    async (id: string) => {
-      await persist({ ...state, banks: state.banks.filter((b) => b.id !== id) });
-    },
-    [state, persist]
-  );
-
-  const linkWallet = useCallback(
-    async (wallet: Omit<Wallet, "id" | "connectedAt">) => {
-      const next: PersistedState = {
-        ...state,
-        wallets: [
-          ...state.wallets,
-          {
-            ...wallet,
-            id: `w_${Date.now().toString(36)}`,
-            connectedAt: Date.now(),
-          },
-        ],
-      };
-      await persist(next);
-    },
-    [state, persist]
-  );
-
-  const removeWallet = useCallback(
-    async (id: string) => {
-      await persist({
-        ...state,
-        wallets: state.wallets.filter((w) => w.id !== id),
+    setTimeout(() => {
+      setState(prev => {
+        const postRes = TigerBeetleSimulation.postTransfer(prev.tbAccounts, "treasury.burn_pool", "user.balance", amountCents);
+        const updated = prev.ledger.map(e => e.id === id ? { ...e, status: "posted" as const } : e);
+        const next = { ...prev, ledger: updated, tbAccounts: postRes.nextAccounts };
+        AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(next)).catch(() => {});
+        return next;
       });
-    },
-    [state, persist]
-  );
+    }, 2500);
+  }, [state, persist]);
 
-  return useMemo(
-    () => ({
-      hydrated,
-      banks: state.banks,
-      wallets: state.wallets,
-      ledger: state.ledger,
-      kyc: state.kyc,
-      security: state.security,
-      balance,
-      stats,
-      burnableTokens,
-      initiateBurn,
-      initiateWithdraw,
-      linkBank,
-      removeBank,
-      linkWallet,
-      removeWallet,
-    }),
-    [
-      hydrated,
-      state.banks,
-      state.wallets,
-      state.ledger,
-      state.kyc,
-      state.security,
-      balance,
-      stats,
-      initiateBurn,
-      initiateWithdraw,
-      linkBank,
-      removeBank,
-      linkWallet,
-      removeWallet,
-    ]
-  );
+  const initiateWithdraw = useCallback(async (bankId: string, amount: number, rail: RailType) => {
+    const amountCents = Math.round(Math.abs(amount) * 100);
+    const res = TigerBeetleSimulation.createTransfer(state.tbAccounts, "user.balance", `external.bank.${bankId}`, amountCents, true);
+    if (!res.success) throw new Error(res.error);
+
+    const id = `lx_${Date.now().toString(36)}`;
+    const entry: LedgerEntry = {
+      id, kind: "withdraw_debit", status: "pending", amountUsd: -Math.abs(amount),
+      createdAt: Date.now(), bankAccountId: bankId, rail, debitAccount: "user.balance",
+      creditAccount: `external.bank.${bankId}`, seal: makeSeal("S-2A4F"),
+    };
+
+    await persist({ ...state, ledger: [entry, ...state.ledger], tbAccounts: res.nextAccounts });
+
+    setTimeout(() => {
+      setState(prev => {
+        const postRes = TigerBeetleSimulation.postTransfer(prev.tbAccounts, "user.balance", `external.bank.${bankId}`, amountCents);
+        const updated = prev.ledger.map(e => e.id === id ? { ...e, status: "posted" as const } : e);
+        const next = { ...prev, ledger: updated, tbAccounts: postRes.nextAccounts };
+        AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(next)).catch(() => {});
+        return next;
+      });
+    }, 3000);
+  }, [state, persist]);
+
+  const initiateTransfer = useCallback(async (destPrincipalId: string, amount: number, memo?: string) => {
+    const amountCents = Math.round(amount * 100);
+    const feeCents = 10; // Flat 10 cent fee for internal p2p
+    const res = TigerBeetleSimulation.createTransferWithFee(state.tbAccounts, "user.balance", `principal.${destPrincipalId}`, "fees.collector", amountCents, feeCents, true);
+    if (!res.success) throw new Error(res.error);
+
+    const principal = knownPrincipals.find(p => p.id === destPrincipalId);
+    const id = `lx_${Date.now().toString(36)}`;
+    const entry: LedgerEntry = {
+      id, kind: "transfer_debit", status: "syncing", amountUsd: -amount,
+      createdAt: Date.now(), counterpartyId: destPrincipalId, counterpartyName: principal?.name || "Unknown",
+      memo, rail: "internal_p2p", debitAccount: "user.balance", creditAccount: `principal.${destPrincipalId}`,
+      seal: makeSeal("S-P2P"),
+    };
+
+    await persist({ ...state, ledger: [entry, ...state.ledger], tbAccounts: res.nextAccounts });
+
+    // Simulate distributed synchronization
+    setTimeout(() => {
+      setState(prev => {
+        const postRes = TigerBeetleSimulation.postTransfer(prev.tbAccounts, "user.balance", `principal.${destPrincipalId}`, amountCents);
+        const postFeeRes = TigerBeetleSimulation.postTransfer(postRes.nextAccounts, "user.balance", "fees.collector", feeCents);
+        const updated = prev.ledger.map(e => e.id === id ? { ...e, status: "posted" as const } : e);
+        const next = { ...prev, ledger: updated, tbAccounts: postFeeRes.nextAccounts };
+        AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(next)).catch(() => {});
+        return next;
+      });
+    }, 1800);
+  }, [state, persist]);
+
+  const linkBank = useCallback(async (bank: any) => {
+    const next = { ...state, banks: [...state.banks, { ...bank, id: `ba_${Date.now().toString(36)}`, addedAt: Date.now(), verified: true }] };
+    await persist(next);
+  }, [state, persist]);
+
+  const linkWallet = useCallback(async (wallet: any) => {
+    const next = { ...state, wallets: [...state.wallets, { ...wallet, id: `w_${Date.now().toString(36)}`, connectedAt: Date.now() }] };
+    await persist(next);
+  }, [state, persist]);
+
+  const isPrivileged = useMemo(() => state.kyc.level >= 2 && state.security.passkeyEnrolled, [state.kyc.level, state.security.passkeyEnrolled]);
+
+  return useMemo(() => ({
+    hydrated, banks: state.banks, wallets: state.wallets, ledger: state.ledger,
+    kyc: state.kyc, security: state.security, tbAccounts: state.tbAccounts,
+    balance, privateBalance, isPrivileged, stats, burnableTokens, knownPrincipals,
+    initiateBurn, initiateWithdraw, initiateTransfer, linkBank, linkWallet,
+    removeBank: (id: string) => persist({ ...state, banks: state.banks.filter(b => b.id !== id) }),
+    removeWallet: (id: string) => persist({ ...state, wallets: state.wallets.filter(w => w.id !== id) }),
+  }), [hydrated, state, balance, privateBalance, isPrivileged, stats, initiateBurn, initiateWithdraw, initiateTransfer, linkBank, linkWallet, persist]);
 });

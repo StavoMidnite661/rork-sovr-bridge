@@ -4,6 +4,7 @@ import {
   CreditCard,
   Fingerprint,
   KeyRound,
+  Lock,
   Plus,
   ShieldCheck,
   Trash2,
@@ -27,6 +28,7 @@ import {
   PrimaryButton,
   SectionLabel,
   formatRelative,
+  formatUSD,
   shortHash,
 } from "@/components/ui";
 import Colors from "@/constants/colors";
@@ -43,6 +45,8 @@ export default function AccountsScreen() {
     removeBank,
     linkWallet,
     removeWallet,
+    isPrivileged,
+    privateBalance,
   } = useTreasury();
   const [bankSheet, setBankSheet] = useState<boolean>(false);
   const [walletSheet, setWalletSheet] = useState<boolean>(false);
@@ -106,6 +110,43 @@ export default function AccountsScreen() {
         </View>
       </Card>
 
+      {/* Private Vault - Privileged Only */}
+      {isPrivileged ? (
+        <View style={{ marginTop: 28 }}>
+          <SectionLabel>Private Vault · Privileged Tier</SectionLabel>
+          <Card style={{ marginTop: 12, backgroundColor: Colors.inkDeep, borderColor: Colors.brassDeep }}>
+            <View style={{ flexDirection: "row", alignItems: "center", padding: 4 }}>
+              <View style={[styles.iconBox, { borderColor: Colors.brass }]}>
+                <Lock size={16} color={Colors.brass} strokeWidth={1.5} />
+              </View>
+              <View style={{ flex: 1, marginLeft: 14 }}>
+                <Text style={[type.bodyStrong, { color: Colors.textHigh }]}>
+                  Deterministic Secret Reserve
+                </Text>
+                <Text style={[type.mono, { color: Colors.brass, marginTop: 4, fontSize: 18 }]}>
+                  {formatUSD(privateBalance)}
+                </Text>
+              </View>
+              <View style={styles.kycPill}>
+                <Text style={styles.kycPillText}>PRIVATE</Text>
+              </View>
+            </View>
+          </Card>
+        </View>
+      ) : (
+        <View style={{ marginTop: 28 }}>
+          <SectionLabel>Private Vault</SectionLabel>
+          <Card style={{ marginTop: 12, opacity: 0.6 }}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 14 }}>
+              <Lock size={16} color={Colors.textLow} />
+              <Text style={[type.body, { color: Colors.textLow }]}>
+                Upgrade to KYC L2 and enroll Passkey to unlock Private Vault.
+              </Text>
+            </View>
+          </Card>
+        </View>
+      )}
+
       {/* Banks */}
       <View style={{ marginTop: 28 }}>
         <Header
@@ -127,12 +168,15 @@ export default function AccountsScreen() {
                 <Card key={b.id} style={{ padding: 16 }}>
                   <View style={{ flexDirection: "row", alignItems: "center" }}>
                     <View style={styles.iconBox}>
-                      <Icon size={16} color={Colors.brass} strokeWidth={1.5} />
+                      <Icon size={16} color={b.isPrivate ? Colors.brass : Colors.textMid} strokeWidth={1.5} />
                     </View>
                     <View style={{ flex: 1, marginLeft: 14 }}>
-                      <Text style={[type.bodyStrong, { color: Colors.textHigh }]}>
-                        {b.institution}
-                      </Text>
+                      <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                        <Text style={[type.bodyStrong, { color: Colors.textHigh }]}>
+                          {b.institution}
+                        </Text>
+                        {b.isPrivate && <Lock size={10} color={Colors.brass} />}
+                      </View>
                       <Text style={[type.mono, { color: Colors.textLow, marginTop: 4 }]}>
                         {b.type === "debit_card" ? "Debit ····" : `${b.type} ····`} {b.mask}
                       </Text>
