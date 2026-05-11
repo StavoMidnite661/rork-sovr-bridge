@@ -2,6 +2,7 @@ import createContextHook from "@nkzw/create-context-hook";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useQuery } from "@tanstack/react-query";
 import { useCallback, useMemo, useState } from "react";
+import { TigerBeetleSimulation } from "@/lib/ledger";
 import type {
   BankAccount,
   BurnableToken,
@@ -9,11 +10,12 @@ import type {
   LedgerEntry,
   RailType,
   SecurityPosture,
+  TigerBeetleAccount,
   TreasuryStats,
   Wallet,
 } from "@/types/treasury";
 
-const STORAGE_KEY = "sovr.bridge.state.v1";
+const STORAGE_KEY = "sovr.bridge.state.v2"; // Bumped version for TB logic
 
 interface PersistedState {
   banks: BankAccount[];
@@ -21,7 +23,51 @@ interface PersistedState {
   ledger: LedgerEntry[];
   kyc: KycState;
   security: SecurityPosture;
+  tbAccounts: TigerBeetleAccount[];
 }
+
+const seedTBAccounts: TigerBeetleAccount[] = [
+  {
+    id: "treasury.burn_pool",
+    ledger: 1,
+    code: 100,
+    debits_pending: 0,
+    debits_posted: 0,
+    credits_pending: 0,
+    credits_posted: 100000000, // $1M initial seed
+    flags: { credits_must_not_exceed_debits: false },
+  },
+  {
+    id: "user.balance",
+    ledger: 1,
+    code: 200,
+    debits_pending: 0,
+    debits_posted: 120000,
+    credits_pending: 0,
+    credits_posted: 335000,
+    flags: { debits_must_not_exceed_credits: true },
+  },
+  {
+    id: "external.bank.chase_8821",
+    ledger: 1,
+    code: 300,
+    debits_pending: 0,
+    debits_posted: 120000,
+    credits_pending: 0,
+    credits_posted: 0,
+    flags: {},
+  },
+  {
+    id: "private.vault.privileged",
+    ledger: 2,
+    code: 777,
+    debits_pending: 0,
+    debits_posted: 0,
+    credits_pending: 0,
+    credits_posted: 50000000, // $500k Private Vault
+    flags: { is_private: true, debits_must_not_exceed_credits: true },
+  },
+];
 
 const seedBanks: BankAccount[] = [
   {
@@ -39,6 +85,15 @@ const seedBanks: BankAccount[] = [
     type: "debit_card",
     verified: true,
     addedAt: Date.now() - 1000 * 60 * 60 * 24 * 3,
+  },
+  {
+    id: "ba_private_9999",
+    institution: "Swiss Private Bank",
+    mask: "9999",
+    type: "savings",
+    verified: true,
+    addedAt: Date.now() - 1000 * 60 * 60 * 24 * 1,
+    isPrivate: true,
   },
 ];
 
@@ -118,6 +173,7 @@ const defaultState: PersistedState = {
     twoFactorEnabled: true,
     lastAudit: Date.now() - 1000 * 60 * 60 * 6,
   },
+  tbAccounts: seedTBAccounts,
 };
 
 const burnableTokens: BurnableToken[] = [
@@ -163,7 +219,12 @@ export const [TreasuryProvider, useTreasury] = createContextHook(() => {
         const raw = await AsyncStorage.getItem(STORAGE_KEY);
         if (raw) {
           const parsed = JSON.parse(raw) as PersistedState;
-          setState(parsed);
+          // Merge seed private accounts if they don't exist in persisted state
+          const mergedTB = [...parsed.tbAccounts];
+          seedTBAccounts.forEach(seed => {
+            if (!mergedTB.find(a => a.id === seed.id)) mergedTB.push(seed);
+          });
+          setState({ ...parsed, tbAccounts: mergedTB });
         }
       } catch (e) {
         console.log("[treasury] hydrate failed", e);
@@ -183,20 +244,27 @@ export const [TreasuryProvider, useTreasury] = createContextHook(() => {
   }, []);
 
   const balance = useMemo<number>(() => {
-    return state.ledger
-      .filter((e) => e.status === "verified")
-      .reduce((sum, e) => sum + e.amountUsd, 0);
-  }, [state.ledger]);
+    const userAcc = state.tbAccounts.find(a => a.id === "user.balance");
+    if (!userAcc) return 0;
+    // Real-world balance calculation: Credits posted - Debits posted
+    return (userAcc.credits_posted - userAcc.debits_posted) / 100;
+  }, [state.tbAccounts]);
+
+  const privateBalance = useMemo<number>(() => {
+    const privAcc = state.tbAccounts.find(a => a.id === "private.vault.privileged");
+    if (!privAcc) return 0;
+    return (privAcc.credits_posted - privAcc.debits_posted) / 100;
+  }, [state.tbAccounts]);
 
   const stats = useMemo<TreasuryStats>(() => {
     const totalCreditsIssued = state.ledger
-      .filter((e) => e.kind === "burn_credit" && e.status === "verified")
+      .filter((e) => e.kind === "burn_credit" && (e.status === "verified" || e.status === "posted"))
       .reduce((s, e) => s + e.amountUsd, 0);
     const totalWithdrawn = state.ledger
-      .filter((e) => e.kind === "withdraw_debit" && e.status === "verified")
+      .filter((e) => e.kind === "withdraw_debit" && (e.status === "verified" || e.status === "posted"))
       .reduce((s, e) => s + Math.abs(e.amountUsd), 0);
     const burnedTokens = state.ledger
-      .filter((e) => e.kind === "burn_credit" && e.status === "verified")
+      .filter((e) => e.kind === "burn_credit" && (e.status === "verified" || e.status === "posted"))
       .reduce((s, e) => s + (e.tokenAmount ?? 0), 0);
     return {
       totalCreditsIssued,
@@ -209,6 +277,22 @@ export const [TreasuryProvider, useTreasury] = createContextHook(() => {
 
   const initiateBurn = useCallback(
     async (token: BurnableToken, amount: number): Promise<LedgerEntry> => {
+      const amountCents = Math.round(amount * token.rate * 100);
+      const debitAccId = "treasury.burn_pool";
+      const creditAccId = "user.balance";
+
+      const transferResult = TigerBeetleSimulation.createTransfer(
+        state.tbAccounts,
+        debitAccId,
+        creditAccId,
+        amountCents,
+        true // Pending
+      );
+
+      if (!transferResult.success) {
+        throw new Error(transferResult.error || "Transfer failed");
+      }
+
       const id = `lx_${Date.now().toString(36)}`;
       const entry: LedgerEntry = {
         id,
@@ -223,40 +307,50 @@ export const [TreasuryProvider, useTreasury] = createContextHook(() => {
         blockNumber: 18000000 + Math.floor(Math.random() * 1000000),
         confirmations: 3,
         requiredConfirmations: 32,
-        debitAccount: "treasury.burn_pool",
-        creditAccount: "user.balance",
+        debitAccount: debitAccId,
+        creditAccount: creditAccId,
         seal: makeSeal("S-2A4F"),
       };
-      const next = { ...state, ledger: [entry, ...state.ledger] };
+
+      const next = {
+        ...state,
+        ledger: [entry, ...state.ledger],
+        tbAccounts: transferResult.nextAccounts
+      };
       await persist(next);
 
-      // simulate confirmation progression
+      // simulate confirmation progression and eventual post
       const tickerId = entry.id;
-      const confirm = async (count: number) => {
-        await new Promise((r) => setTimeout(r, 900));
-        setState((prev) => {
-          const updated = prev.ledger.map((e) =>
-            e.id === tickerId
-              ? {
-                  ...e,
-                  confirmations: count,
-                  status:
-                    count >= (e.requiredConfirmations ?? 32)
-                      ? ("verified" as const)
-                      : ("confirming" as const),
-                }
-              : e
-          );
-          const nextState = { ...prev, ledger: updated };
-          AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(nextState)).catch(
-            () => {}
-          );
-          return nextState;
-        });
-      };
       (async () => {
         for (const c of [8, 16, 24, 32]) {
-          await confirm(c);
+          await new Promise((r) => setTimeout(r, 900));
+          setState((prev) => {
+            const isDone = c >= 32;
+            let currentAccounts = prev.tbAccounts;
+
+            if (isDone) {
+              const postRes = TigerBeetleSimulation.postTransfer(
+                currentAccounts,
+                debitAccId,
+                creditAccId,
+                amountCents
+              );
+              currentAccounts = postRes.nextAccounts;
+            }
+
+            const updated = prev.ledger.map((e) =>
+              e.id === tickerId
+                ? {
+                    ...e,
+                    confirmations: c,
+                    status: isDone ? ("posted" as const) : ("confirming" as const),
+                  }
+                : e
+            );
+            const nextState = { ...prev, ledger: updated, tbAccounts: currentAccounts };
+            AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(nextState)).catch(() => {});
+            return nextState;
+          });
         }
       })();
 
@@ -271,6 +365,40 @@ export const [TreasuryProvider, useTreasury] = createContextHook(() => {
       amount: number,
       rail: RailType
     ): Promise<LedgerEntry> => {
+      const amountCents = Math.round(Math.abs(amount) * 100);
+      const debitAccId = "user.balance";
+      const creditAccId = `external.bank.${bankAccountId}`;
+
+      // Check if account exists in TB simulation, if not create a stub
+      let currentTBAccounts = state.tbAccounts;
+      if (!currentTBAccounts.find(a => a.id === creditAccId)) {
+        currentTBAccounts = [
+          ...currentTBAccounts,
+          {
+            id: creditAccId,
+            ledger: 1,
+            code: 300,
+            debits_pending: 0,
+            debits_posted: 0,
+            credits_pending: 0,
+            credits_posted: 0,
+            flags: {},
+          }
+        ];
+      }
+
+      const transferResult = TigerBeetleSimulation.createTransfer(
+        currentTBAccounts,
+        debitAccId,
+        creditAccId,
+        amountCents,
+        true // Pending
+      );
+
+      if (!transferResult.success) {
+        throw new Error(transferResult.error || "Withdrawal failed");
+      }
+
       const eta =
         rail === "rtp"
           ? "≈ 30 seconds"
@@ -279,6 +407,7 @@ export const [TreasuryProvider, useTreasury] = createContextHook(() => {
           : rail === "debit_push"
           ? "≈ 2 minutes"
           : "1–3 business days";
+
       const id = `lx_${Date.now().toString(36)}`;
       const entry: LedgerEntry = {
         id,
@@ -289,23 +418,32 @@ export const [TreasuryProvider, useTreasury] = createContextHook(() => {
         bankAccountId,
         rail,
         eta,
-        debitAccount: "user.balance",
-        creditAccount: `external.bank.${bankAccountId}`,
+        debitAccount: debitAccId,
+        creditAccount: creditAccId,
         seal: makeSeal("S-2A4F"),
       };
-      const next = { ...state, ledger: [entry, ...state.ledger] };
+
+      const next = {
+        ...state,
+        ledger: [entry, ...state.ledger],
+        tbAccounts: transferResult.nextAccounts
+      };
       await persist(next);
 
       // simulate settlement
       setTimeout(() => {
         setState((prev) => {
+          const postRes = TigerBeetleSimulation.postTransfer(
+            prev.tbAccounts,
+            debitAccId,
+            creditAccId,
+            amountCents
+          );
           const updated = prev.ledger.map((e) =>
-            e.id === id ? { ...e, status: "verified" as const } : e
+            e.id === id ? { ...e, status: "posted" as const } : e
           );
-          const nextState = { ...prev, ledger: updated };
-          AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(nextState)).catch(
-            () => {}
-          );
+          const nextState = { ...prev, ledger: updated, tbAccounts: postRes.nextAccounts };
+          AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(nextState)).catch(() => {});
           return nextState;
         });
       }, 2400);
@@ -369,6 +507,8 @@ export const [TreasuryProvider, useTreasury] = createContextHook(() => {
     [state, persist]
   );
 
+  const isPrivileged = useMemo(() => state.kyc.level >= 2 && state.security.passkeyEnrolled, [state.kyc.level, state.security.passkeyEnrolled]);
+
   return useMemo(
     () => ({
       hydrated,
@@ -377,7 +517,10 @@ export const [TreasuryProvider, useTreasury] = createContextHook(() => {
       ledger: state.ledger,
       kyc: state.kyc,
       security: state.security,
+      tbAccounts: state.tbAccounts,
       balance,
+      privateBalance,
+      isPrivileged,
       stats,
       burnableTokens,
       initiateBurn,
@@ -394,7 +537,10 @@ export const [TreasuryProvider, useTreasury] = createContextHook(() => {
       state.ledger,
       state.kyc,
       state.security,
+      state.tbAccounts,
       balance,
+      privateBalance,
+      isPrivileged,
       stats,
       initiateBurn,
       initiateWithdraw,
